@@ -555,126 +555,185 @@ project/
 
 ### Phase 1: Interview & Specification
 ```python
-async def conduct_interview(initial_idea: str) -> GameSpec:
+async def conduct_interview(initial_idea: str) -> Tuple[GameSpec, List[Feature]]:
     """
-    Interactive interview process to flesh out the game concept.
-    Returns a detailed game specification and feature list.
+    Interactive interview to flesh out the game concept.
+    Features are created in DRAFT status for human review.
     """
-    # Start interview session
     session = InterviewSession(initial_idea)
 
+    # Interview loop
     while not session.is_complete:
-        # Interviewer generates questions based on current state
         questions = await interviewer_agent.generate_questions(session)
-
-        # Present questions to user and collect responses
         responses = await ui.ask_user(questions)
-
-        # Update session with responses
         session.add_responses(responses)
-
-        # Check if we have enough detail
         session.is_complete = await interviewer_agent.check_completeness(session)
 
-    # Generate final specifications
+    # Generate specs
     game_spec = await interviewer_agent.generate_game_spec(session)
     feature_specs = await interviewer_agent.generate_feature_specs(session)
 
-    # Store in database
-    db.insert_game_spec(game_spec)
+    # Create features in DRAFT status (requires human approval)
+    features = []
     for spec in feature_specs:
-        db.insert_feature_spec(spec)
+        feature = Feature(
+            name=spec.name,
+            description=spec.description,
+            acceptance_criteria=spec.acceptance_criteria,
+            status="draft",  # Human must approve before implementation
+            priority=spec.priority,
+        )
+        await db.insert_feature(feature)
+        features.append(feature)
 
-    return game_spec, feature_specs
+    # Build initial dependency graph
+    await planner_agent.establish_dependencies(features)
+
+    return game_spec, features
 ```
 
-### Phase 2: Planning & Decomposition
+### Phase 2: Human Spec Review (DRAFT → PENDING)
 ```python
-async def plan_implementation(game_spec: GameSpec, feature_specs: List[FeatureSpec]) -> List[Feature]:
-    # Planner analyzes specs and creates implementation plan
-    features = await planner_agent.create_implementation_plan(game_spec, feature_specs)
+# Handled via UI - human reviews each feature spec
+@app.post("/api/features/{feature_id}/approve")
+async def approve_feature_spec(feature_id: int):
+    """Human approves a feature spec, moving it to implementation queue."""
+    feature = await db.get_feature(feature_id)
+    assert feature.status == "draft"
 
-    # Store features in database
-    for feature in features:
-        db.insert_feature(feature)
+    feature.status = "pending"
+    feature.approved_at = datetime.now()
+    await db.update_feature(feature)
 
-    # Build dependency graph
-    graph = build_dependency_graph(features)
+@app.post("/api/features/{feature_id}/iterate")
+async def iterate_feature_spec(feature_id: int, feedback: str):
+    """Human requests changes - Interviewer refines the spec."""
+    feature = await db.get_feature(feature_id)
+    assert feature.status == "draft"
 
-    return features
+    # Interviewer refines based on feedback
+    updated_spec = await interviewer_agent.refine_spec(feature, feedback)
+    feature.description = updated_spec.description
+    feature.acceptance_criteria = updated_spec.acceptance_criteria
+    await db.update_feature(feature)
 ```
 
-### Phase 3: Feature Scheduling
+### Phase 3: Feature Scheduling (PENDING → IN_PROGRESS)
 ```python
 async def schedule_features():
-    while has_pending_features():
-        # Find features with all dependencies satisfied
-        ready_features = db.get_ready_features()
+    """Continuously assign ready features to available coders."""
+    while True:
+        ready_features = await get_ready_features()
 
         for feature in ready_features:
             if agent_pool.has_available_coder():
                 await assign_to_coder(feature)
+
+        await asyncio.sleep(5)  # Check every 5 seconds
 ```
 
-### Phase 4: Feature Implementation
+### Phase 4: Implementation with Code-Test Loop (IN_PROGRESS)
 ```python
 async def implement_feature(feature: Feature):
-    # Create isolated worktree
+    """
+    Code-test loop: Coder and Tester iterate until tests pass.
+    """
     worktree = await create_worktree(feature)
+    feature.status = "in_progress"
+    feature.worktree_path = str(worktree)
+    await db.update_feature(feature)
 
-    try:
-        # Coder implements the feature
-        await coder_agent.implement(feature, worktree)
+    max_iterations = config.max_code_test_iterations
 
-        # Tester validates
+    for iteration in range(max_iterations):
+        # Coder implements or fixes
+        if iteration == 0:
+            await coder_agent.implement(feature, worktree)
+        else:
+            await coder_agent.fix(feature, worktree, test_failures)
+
+        # Tester validates via Godot MCP
         test_result = await tester_agent.test(feature, worktree)
 
-        if not test_result.passed:
-            raise TestFailure(test_result)
+        if test_result.passed:
+            # All tests pass - move to agent review
+            feature.status = "agent_review"
+            await db.update_feature(feature)
+            return await agent_review(feature, worktree)
 
-        # Reviewer approves
-        review = await reviewer_agent.review(feature, worktree)
+        test_failures = test_result.failures
+        await log_info(f"Iteration {iteration + 1}: {len(test_failures)} tests failed")
 
-        if not review.approved:
-            raise ReviewRejected(review)
-
-        # Merge to main
-        await merge_feature(feature, worktree)
-
-    except Exception as e:
-        await handle_failure(feature, e)
+    # Max iterations exceeded
+    feature.status = "failed"
+    feature.error = f"Max iterations ({max_iterations}) exceeded"
+    await db.update_feature(feature)
 ```
 
-### Phase 5: Testing Pipeline
+### Phase 5: Agent Review (AGENT_REVIEW → HUMAN_REVIEW or IN_PROGRESS)
 ```python
-async def test_feature(feature: Feature, worktree: Path, godot_mcp: GodotMCP):
-    results = TestResults()
+async def agent_review(feature: Feature, worktree: Path):
+    """
+    Automated code review for quality, best practices, coverage.
+    """
+    review = await reviewer_agent.review(feature, worktree)
 
-    # 1. Run unit tests via MCP (fast, isolated logic verification)
-    unit_result = await godot_mcp.run_unit_tests(worktree)
-    results.add(unit_result)
-    if not unit_result.passed:
-        return results  # Fail fast
+    if review.approved:
+        # Ready for human review
+        feature.status = "human_review"
+        await db.update_feature(feature)
+        await notify_human_review_ready(feature)
+    else:
+        # Agent requests changes - back to coding
+        feature.status = "in_progress"
+        await db.update_feature(feature)
+        await coder_agent.fix(feature, worktree, review.requested_changes)
+        # Re-enter code-test loop
+        await implement_feature(feature)
+```
 
-    # 2. Run integration tests via MCP (live game interaction)
-    await godot_mcp.load_project(worktree)
-    await godot_mcp.run_scene("res://scenes/game.tscn")
+### Phase 6: Human Review (HUMAN_REVIEW → COMPLETED, IN_PROGRESS, or FAILED)
+```python
+# Handled via UI - human makes final decision
+@app.post("/api/features/{feature_id}/human-approve")
+async def human_approve(feature_id: int):
+    """Human approves - merge to main."""
+    feature = await db.get_feature(feature_id)
+    assert feature.status == "human_review"
 
-    for criterion in feature.acceptance_criteria:
-        if criterion.test_type == "integration":
-            # Agent can now "play" the game to verify behavior
-            test_result = await run_interactive_test(godot_mcp, criterion)
-            results.add(test_result)
-            if not test_result.passed:
-                return results
+    await merge_feature(feature)
+    await cleanup_worktree(feature)
 
-    # 3. Visual validation via MCP (screenshot + vision analysis)
-    if feature.has_visual_criteria:
-        screenshot = await godot_mcp.screenshot()
-        visual_result = await analyze_screenshot(screenshot, feature.visual_criteria)
-        results.add(visual_result)
+    feature.status = "completed"
+    feature.completed_at = datetime.now()
+    await db.update_feature(feature)
 
-    return results
+@app.post("/api/features/{feature_id}/human-request-changes")
+async def human_request_changes(feature_id: int, feedback: str):
+    """Human requests changes - back to implementation."""
+    feature = await db.get_feature(feature_id)
+    assert feature.status == "human_review"
+
+    feature.status = "in_progress"
+    await db.update_feature(feature)
+
+    # Coder addresses feedback
+    await coder_agent.fix(feature, feature.worktree_path, feedback)
+    # Re-enter code-test loop
+    await implement_feature(feature)
+
+@app.post("/api/features/{feature_id}/human-reject")
+async def human_reject(feature_id: int, reason: str):
+    """Human rejects - feature needs fundamental rethinking."""
+    feature = await db.get_feature(feature_id)
+    assert feature.status == "human_review"
+
+    await cleanup_worktree(feature)
+
+    feature.status = "failed"
+    feature.error = f"Rejected: {reason}"
+    await db.update_feature(feature)
+    # Can be moved back to DRAFT for rethinking
 ```
 
 ---
