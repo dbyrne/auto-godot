@@ -331,12 +331,12 @@ stateDiagram-v2
     IN_PROGRESS --> REVIEW: Tests pass
     REVIEW --> COMPLETED: Approved & merged
     REVIEW --> IN_PROGRESS: Changes requested
+    REVIEW --> FAILED: Rejected
     COMPLETED --> [*]
 
     IN_PROGRESS --> FAILED: Unrecoverable error
-    REVIEW --> FAILED: Unrecoverable error
 
-    FAILED --> PENDING: Retry
+    FAILED --> DRAFT: Rethink approach
 ```
 
 **State Transitions**:
@@ -347,9 +347,10 @@ stateDiagram-v2
 4. **PENDING → IN_PROGRESS**: Agent assigned, worktree created (only when all dependencies are COMPLETED)
 5. **IN_PROGRESS → REVIEW**: Implementation complete AND all tests pass
 6. **REVIEW → COMPLETED**: Reviewer approves, merged to main
-7. **REVIEW → IN_PROGRESS**: Reviewer requests changes
-8. **Any → FAILED**: Unrecoverable error (timeout, infrastructure failure, max iterations exceeded)
-9. **FAILED → PENDING**: Manual retry or automatic retry with backoff
+7. **REVIEW → IN_PROGRESS**: Reviewer requests minor changes
+8. **REVIEW → FAILED**: Reviewer rejects (fundamentally flawed approach)
+9. **IN_PROGRESS → FAILED**: Unrecoverable error (timeout, max iterations exceeded)
+10. **FAILED → DRAFT**: Return to spec review to rethink approach
 
 ### Spec Review (DRAFT state)
 
