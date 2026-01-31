@@ -262,7 +262,7 @@ CREATE TABLE features (
     description TEXT NOT NULL,
     acceptance_criteria TEXT, -- JSON array of criteria
     status TEXT DEFAULT 'pending',
-    -- pending, ready, in_progress, testing, review, completed, failed
+    -- pending, in_progress, testing, review, completed, failed
     priority INTEGER DEFAULT 0,
     complexity TEXT, -- simple, medium, complex
     branch_name TEXT,
@@ -324,31 +324,54 @@ CREATE TABLE test_results (
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING
-    PENDING --> READY: Dependencies completed
-    READY --> IN_PROGRESS: Agent assigned
+    PENDING --> IN_PROGRESS: Assigned (dependencies met)
     IN_PROGRESS --> TESTING: Implementation complete
     TESTING --> REVIEW: Tests pass
     REVIEW --> COMPLETED: Approved & merged
     COMPLETED --> [*]
 
-    PENDING --> FAILED: Error
-    READY --> FAILED: Error
     IN_PROGRESS --> FAILED: Error
     TESTING --> FAILED: Tests fail
     REVIEW --> FAILED: Rejected
 
-    FAILED --> READY: Retry (max 3)
+    FAILED --> PENDING: Retry (max 3)
 ```
 
 **State Transitions**:
 
-1. **PENDING → READY**: All dependencies are COMPLETED
-2. **READY → IN_PROGRESS**: Coder agent assigned, worktree created
-3. **IN_PROGRESS → TESTING**: Coder marks implementation complete
-4. **TESTING → REVIEW**: All tests pass
-5. **REVIEW → COMPLETED**: Reviewer approves, merged to main
-6. **Any → FAILED**: Error or test failure
-7. **FAILED → READY**: Retry with fixes (max 3 attempts)
+1. **PENDING → IN_PROGRESS**: Agent assigned, worktree created (only when all dependencies are COMPLETED)
+2. **IN_PROGRESS → TESTING**: Coder marks implementation complete
+3. **TESTING → REVIEW**: All tests pass
+4. **REVIEW → COMPLETED**: Reviewer approves, merged to main
+5. **Any → FAILED**: Error or test failure
+6. **FAILED → PENDING**: Retry with fixes (max 3 attempts)
+
+### Ready Features (Calculated)
+
+"Ready" is not a persisted state—it's a **query filter** on PENDING features:
+
+```python
+def get_ready_features(project_id: int) -> List[Feature]:
+    """
+    A feature is ready when:
+    1. Status is PENDING
+    2. All dependencies have status COMPLETED
+    """
+    return db.query("""
+        SELECT f.* FROM features f
+        WHERE f.project_id = :project_id
+        AND f.status = 'pending'
+        AND NOT EXISTS (
+            SELECT 1 FROM feature_dependencies fd
+            JOIN features dep ON fd.depends_on_id = dep.id
+            WHERE fd.feature_id = f.id
+            AND dep.status != 'completed'
+        )
+        ORDER BY f.priority DESC, f.id ASC
+    """, {"project_id": project_id})
+```
+
+This ensures ready status is always accurate—when a feature completes, its dependents become ready automatically without cascading updates.
 
 ---
 
