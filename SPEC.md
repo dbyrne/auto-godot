@@ -262,7 +262,7 @@ CREATE TABLE features (
     description TEXT NOT NULL,
     acceptance_criteria TEXT, -- JSON array of criteria
     status TEXT DEFAULT 'pending',
-    -- pending, in_progress, testing, review, completed, failed
+    -- pending, in_progress, review, completed, failed
     priority INTEGER DEFAULT 0,
     complexity TEXT, -- simple, medium, complex
     branch_name TEXT,
@@ -325,26 +325,75 @@ CREATE TABLE test_results (
 stateDiagram-v2
     [*] --> PENDING
     PENDING --> IN_PROGRESS: Assigned (dependencies met)
-    IN_PROGRESS --> TESTING: Implementation complete
-    TESTING --> REVIEW: Tests pass
+    IN_PROGRESS --> REVIEW: Tests pass
     REVIEW --> COMPLETED: Approved & merged
+    REVIEW --> IN_PROGRESS: Changes requested
     COMPLETED --> [*]
 
-    IN_PROGRESS --> FAILED: Error
-    TESTING --> FAILED: Tests fail
-    REVIEW --> FAILED: Rejected
+    IN_PROGRESS --> FAILED: Unrecoverable error
+    REVIEW --> FAILED: Unrecoverable error
 
-    FAILED --> PENDING: Retry (max 3)
+    FAILED --> PENDING: Retry
 ```
 
 **State Transitions**:
 
 1. **PENDING → IN_PROGRESS**: Agent assigned, worktree created (only when all dependencies are COMPLETED)
-2. **IN_PROGRESS → TESTING**: Coder marks implementation complete
-3. **TESTING → REVIEW**: All tests pass
-4. **REVIEW → COMPLETED**: Reviewer approves, merged to main
-5. **Any → FAILED**: Error or test failure
-6. **FAILED → PENDING**: Retry with fixes (max 3 attempts)
+2. **IN_PROGRESS → REVIEW**: Implementation complete AND all tests pass
+3. **REVIEW → COMPLETED**: Reviewer approves, merged to main
+4. **REVIEW → IN_PROGRESS**: Reviewer requests changes
+5. **Any → FAILED**: Unrecoverable error (timeout, infrastructure failure, max iterations exceeded)
+6. **FAILED → PENDING**: Manual retry or automatic retry with backoff
+
+### Code-Test Loop (within IN_PROGRESS)
+
+Testing is not a separate state—it's a continuous loop within IN_PROGRESS:
+
+```mermaid
+flowchart LR
+    subgraph IN_PROGRESS
+        Code["Coder implements"]
+        Test["Tester validates"]
+        Fix["Coder fixes"]
+
+        Code --> Test
+        Test -->|"pass"| Done["Ready for review"]
+        Test -->|"fail"| Fix
+        Fix --> Test
+    end
+```
+
+```python
+async def implement_feature(feature: Feature, worktree: Path):
+    """
+    Code-test loop continues until tests pass or max iterations reached.
+    """
+    max_iterations = config.max_code_test_iterations  # e.g., 10
+
+    for iteration in range(max_iterations):
+        # Coder implements/fixes
+        if iteration == 0:
+            await coder_agent.implement(feature, worktree)
+        else:
+            await coder_agent.fix(feature, worktree, test_result.failures)
+
+        # Tester validates
+        test_result = await tester_agent.test(feature, worktree)
+
+        if test_result.passed:
+            # Move to review
+            feature.status = "review"
+            await db.update_feature(feature)
+            return
+
+        # Log iteration and continue
+        await log_info(f"Feature {feature.id} iteration {iteration + 1}: {len(test_result.failures)} tests failed")
+
+    # Max iterations exceeded - mark as failed
+    feature.status = "failed"
+    feature.error = f"Max iterations ({max_iterations}) exceeded"
+    await db.update_feature(feature)
+```
 
 ### Ready Features (Calculated)
 
@@ -1150,7 +1199,8 @@ project:
 orchestrator:
   database_path: ".auto-godot/features.db"
   max_parallel_coders: 3
-  max_retries: 3
+  max_code_test_iterations: 10  # max code-test loops before failing
+  max_retries: 3                # max retries for failed features
   log_level: "info"
 
 agents:
