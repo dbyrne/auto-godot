@@ -1165,6 +1165,11 @@ git:
   auto_push: false
   commit_prefix: "[auto-godot]"
 
+progress:
+  activity_timeout: 600        # seconds before stall warning
+  commit_check_interval: 30    # seconds between commit checks
+  hooks_enabled: true          # enable Claude Code hooks for activity tracking
+
 web:
   host: "localhost"
   port: 8000
@@ -1388,6 +1393,161 @@ Agents have access to tools via Claude Code and MCP servers:
 - `playwright.click` - Click elements
 - `playwright.fill` - Fill form fields
 - `playwright.screenshot` - Capture UI screenshots
+
+---
+
+## Progress Monitoring
+
+Long-running feature implementations are monitored via **Claude Code hooks** and **incremental git commits**.
+
+### Claude Code Hooks
+
+Each worktree is configured with hooks that report agent activity to the orchestrator:
+
+```json
+// .claude/hooks.json (auto-generated in each worktree)
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "command": "python -c \"import urllib.request, json; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/api/agent/activity', data=json.dumps({'feature_id': '$FEATURE_ID', 'tool': '$CLAUDE_TOOL_NAME', 'worktree': '$PWD'}).encode(), headers={'Content-Type': 'application/json'}, method='POST'))\""
+      }
+    ]
+  }
+}
+```
+
+The orchestrator receives real-time updates on every tool call:
+
+```python
+@app.post("/api/agent/activity")
+async def agent_activity(activity: AgentActivity):
+    feature = await db.get_feature(activity.feature_id)
+    feature.last_activity = datetime.now()
+    feature.last_tool = activity.tool
+
+    # Broadcast to UI via WebSocket
+    await ws_manager.broadcast({
+        "type": "agent_activity",
+        "feature_id": activity.feature_id,
+        "tool": activity.tool,
+        "timestamp": datetime.now().isoformat()
+    })
+
+    await db.update_feature(feature)
+```
+
+### Incremental Commits
+
+Agents are instructed to commit frequently as checkpoints. The orchestrator monitors commits:
+
+```python
+CODER_SYSTEM_PROMPT = """
+...
+## Commit Strategy
+Make small, incremental commits as you work:
+1. Commit after creating each new file
+2. Commit after completing each logical unit of work
+3. Commit before starting a risky refactor
+4. Use descriptive commit messages
+
+This ensures progress is saved and the orchestrator can track your work.
+...
+"""
+```
+
+```python
+async def monitor_commits(feature: Feature):
+    """Watch for new commits in the feature worktree."""
+    last_commit = await get_head_commit(feature.worktree_path)
+
+    while feature.status == "in_progress":
+        await asyncio.sleep(30)  # Check every 30 seconds
+
+        current_commit = await get_head_commit(feature.worktree_path)
+        if current_commit != last_commit:
+            commit_info = await get_commit_info(feature.worktree_path, current_commit)
+
+            await db.insert_checkpoint(Checkpoint(
+                feature_id=feature.id,
+                commit_hash=current_commit,
+                message=commit_info.message,
+                files_changed=commit_info.files,
+                timestamp=datetime.now()
+            ))
+
+            # Broadcast to UI
+            await ws_manager.broadcast({
+                "type": "feature_checkpoint",
+                "feature_id": feature.id,
+                "commit": current_commit,
+                "message": commit_info.message
+            })
+
+            last_commit = current_commit
+```
+
+### Stall Detection
+
+If no activity is detected for a configurable timeout, the orchestrator intervenes:
+
+```python
+async def detect_stall(feature: Feature, timeout_minutes: int = 10):
+    """Detect if an agent has stalled and take action."""
+    while feature.status == "in_progress":
+        await asyncio.sleep(60)
+
+        minutes_since_activity = (datetime.now() - feature.last_activity).seconds / 60
+
+        if minutes_since_activity > timeout_minutes:
+            # Log warning
+            await log_warning(f"Feature {feature.id} has stalled - no activity for {timeout_minutes} minutes")
+
+            # Option 1: Send a nudge to the agent (via a file the agent is watching)
+            # Option 2: Kill and restart the agent
+            # Option 3: Escalate to supervisor agent
+
+            await handle_stalled_feature(feature)
+            break
+```
+
+### Progress Dashboard
+
+The UI displays real-time progress for each active feature:
+
+```mermaid
+flowchart LR
+    subgraph Feature["feature-player-movement"]
+        direction TB
+        Status["🔄 In Progress"]
+        Agent["Agent: Coder #1"]
+        LastTool["Last: Edit Player.gd"]
+        Activity["Activity: 30s ago"]
+        Commits["Commits: 4"]
+    end
+```
+
+### Database Schema
+
+```sql
+-- Track agent activity heartbeats
+CREATE TABLE agent_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feature_id INTEGER NOT NULL REFERENCES features(id),
+    tool_name TEXT NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Track commit checkpoints
+CREATE TABLE checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feature_id INTEGER NOT NULL REFERENCES features(id),
+    commit_hash TEXT NOT NULL,
+    message TEXT,
+    files_changed TEXT,  -- JSON array
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
 
 ---
 
