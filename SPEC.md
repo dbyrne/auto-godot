@@ -262,7 +262,7 @@ CREATE TABLE features (
     description TEXT NOT NULL,
     acceptance_criteria TEXT, -- JSON array of criteria
     status TEXT DEFAULT 'draft',
-    -- draft, pending, in_progress, review, completed, failed
+    -- draft, pending, in_progress, agent_review, human_review, completed, failed
     priority INTEGER DEFAULT 0,
     complexity TEXT, -- simple, medium, complex
     branch_name TEXT,
@@ -328,10 +328,12 @@ stateDiagram-v2
     DRAFT --> PENDING: Human approves spec
     DRAFT --> DRAFT: Human requests changes
     PENDING --> IN_PROGRESS: Assigned (dependencies met)
-    IN_PROGRESS --> REVIEW: Tests pass
-    REVIEW --> COMPLETED: Approved & merged
-    REVIEW --> IN_PROGRESS: Changes requested
-    REVIEW --> FAILED: Rejected
+    IN_PROGRESS --> AGENT_REVIEW: Tests pass
+    AGENT_REVIEW --> IN_PROGRESS: Agent requests changes
+    AGENT_REVIEW --> HUMAN_REVIEW: Agent approves
+    HUMAN_REVIEW --> IN_PROGRESS: Human requests changes
+    HUMAN_REVIEW --> COMPLETED: Human approves & merged
+    HUMAN_REVIEW --> FAILED: Human rejects
     COMPLETED --> [*]
 
     IN_PROGRESS --> FAILED: Unrecoverable error
@@ -345,12 +347,47 @@ stateDiagram-v2
 2. **DRAFT → DRAFT**: Human reviews and iterates on spec with Interviewer
 3. **DRAFT → PENDING**: Human approves spec, feature enters implementation queue
 4. **PENDING → IN_PROGRESS**: Agent assigned, worktree created (only when all dependencies are COMPLETED)
-5. **IN_PROGRESS → REVIEW**: Implementation complete AND all tests pass
-6. **REVIEW → COMPLETED**: Reviewer approves, merged to main
-7. **REVIEW → IN_PROGRESS**: Reviewer requests minor changes
-8. **REVIEW → FAILED**: Reviewer rejects (fundamentally flawed approach)
-9. **IN_PROGRESS → FAILED**: Unrecoverable error (timeout, max iterations exceeded)
-10. **FAILED → DRAFT**: Return to spec review to rethink approach
+5. **IN_PROGRESS → AGENT_REVIEW**: Implementation complete AND all tests pass
+6. **AGENT_REVIEW → IN_PROGRESS**: Reviewer agent requests changes (code quality, best practices)
+7. **AGENT_REVIEW → HUMAN_REVIEW**: Reviewer agent approves, ready for human
+8. **HUMAN_REVIEW → IN_PROGRESS**: Human requests changes
+9. **HUMAN_REVIEW → COMPLETED**: Human approves, merged to main
+10. **HUMAN_REVIEW → FAILED**: Human rejects (fundamentally flawed approach)
+11. **IN_PROGRESS → FAILED**: Unrecoverable error (timeout, max iterations exceeded)
+12. **FAILED → DRAFT**: Return to spec review to rethink approach
+
+### Two-Stage Review
+
+```mermaid
+flowchart LR
+    subgraph Stage1["AGENT_REVIEW (automated)"]
+        AR_Check["Reviewer agent checks:\n- Code quality\n- Best practices\n- Test coverage\n- Performance"]
+    end
+
+    subgraph Stage2["HUMAN_REVIEW (manual)"]
+        HR_Check["Human reviews:\n- Matches spec intent\n- UX/gameplay feel\n- Architectural fit\n- Final approval"]
+    end
+
+    IN_PROGRESS --> Stage1
+    Stage1 -->|"issues found"| IN_PROGRESS
+    Stage1 -->|"approved"| Stage2
+    Stage2 -->|"changes needed"| IN_PROGRESS
+    Stage2 -->|"approved"| COMPLETED
+    Stage2 -->|"rejected"| FAILED
+```
+
+**Agent Review** catches:
+- Code style violations
+- Missing error handling
+- Performance issues
+- Insufficient test coverage
+- Godot best practices
+
+**Human Review** decides:
+- Does it match the intended design?
+- Does it feel right when playing?
+- Does it fit the architecture?
+- Approve, request changes, or reject entirely
 
 ### Spec Review (DRAFT state)
 
