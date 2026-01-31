@@ -261,13 +261,14 @@ CREATE TABLE features (
     name TEXT NOT NULL,
     description TEXT NOT NULL,
     acceptance_criteria TEXT, -- JSON array of criteria
-    status TEXT DEFAULT 'pending',
-    -- pending, in_progress, review, completed, failed
+    status TEXT DEFAULT 'draft',
+    -- draft, pending, in_progress, review, completed, failed
     priority INTEGER DEFAULT 0,
     complexity TEXT, -- simple, medium, complex
     branch_name TEXT,
     worktree_path TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    approved_at TIMESTAMP,    -- When human approved the spec
     started_at TIMESTAMP,
     completed_at TIMESTAMP
 );
@@ -323,7 +324,9 @@ CREATE TABLE test_results (
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING
+    [*] --> DRAFT
+    DRAFT --> PENDING: Human approves spec
+    DRAFT --> DRAFT: Human requests changes
     PENDING --> IN_PROGRESS: Assigned (dependencies met)
     IN_PROGRESS --> REVIEW: Tests pass
     REVIEW --> COMPLETED: Approved & merged
@@ -338,12 +341,71 @@ stateDiagram-v2
 
 **State Transitions**:
 
-1. **PENDING → IN_PROGRESS**: Agent assigned, worktree created (only when all dependencies are COMPLETED)
-2. **IN_PROGRESS → REVIEW**: Implementation complete AND all tests pass
-3. **REVIEW → COMPLETED**: Reviewer approves, merged to main
-4. **REVIEW → IN_PROGRESS**: Reviewer requests changes
-5. **Any → FAILED**: Unrecoverable error (timeout, infrastructure failure, max iterations exceeded)
-6. **FAILED → PENDING**: Manual retry or automatic retry with backoff
+1. **[new] → DRAFT**: Interviewer generates feature spec
+2. **DRAFT → DRAFT**: Human reviews and iterates on spec with Interviewer
+3. **DRAFT → PENDING**: Human approves spec, feature enters implementation queue
+4. **PENDING → IN_PROGRESS**: Agent assigned, worktree created (only when all dependencies are COMPLETED)
+5. **IN_PROGRESS → REVIEW**: Implementation complete AND all tests pass
+6. **REVIEW → COMPLETED**: Reviewer approves, merged to main
+7. **REVIEW → IN_PROGRESS**: Reviewer requests changes
+8. **Any → FAILED**: Unrecoverable error (timeout, infrastructure failure, max iterations exceeded)
+9. **FAILED → PENDING**: Manual retry or automatic retry with backoff
+
+### Spec Review (DRAFT state)
+
+Before implementation begins, humans review and refine each feature spec:
+
+```mermaid
+flowchart LR
+    subgraph DRAFT["DRAFT - Human Review"]
+        Spec["Feature Spec"]
+        Human["Human reviews"]
+        Iterate["Interviewer refines"]
+
+        Spec --> Human
+        Human -->|"needs changes"| Iterate
+        Iterate --> Spec
+        Human -->|"approved"| Approved["→ PENDING"]
+    end
+```
+
+**The UI provides:**
+- View generated feature spec (description, acceptance criteria, dependencies)
+- Edit spec directly or chat with Interviewer to refine
+- Adjust priority (MVP / important / nice-to-have)
+- Modify dependencies
+- Approve to move to PENDING, or archive/delete
+
+```python
+# Feature starts in DRAFT after Interviewer generates it
+async def create_feature_from_interview(feature_spec: FeatureSpec) -> Feature:
+    feature = Feature(
+        name=feature_spec.name,
+        description=feature_spec.description,
+        acceptance_criteria=feature_spec.acceptance_criteria,
+        status="draft",  # Requires human approval
+        priority=feature_spec.priority,
+    )
+    await db.insert_feature(feature)
+    return feature
+
+# Human approves via UI
+@app.post("/api/features/{feature_id}/approve")
+async def approve_feature(feature_id: int):
+    feature = await db.get_feature(feature_id)
+    if feature.status != "draft":
+        raise HTTPException(400, "Feature is not in draft status")
+
+    feature.status = "pending"
+    feature.approved_at = datetime.now()
+    await db.update_feature(feature)
+
+    # Notify UI
+    await ws_manager.broadcast({
+        "type": "feature_approved",
+        "feature_id": feature_id
+    })
+```
 
 ### Code-Test Loop (within IN_PROGRESS)
 
