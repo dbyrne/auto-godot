@@ -1262,59 +1262,121 @@ criteria = [
 
 ### React Web UI
 
-Built with React + TypeScript and served via FastAPI backend:
+Built with React + TypeScript, served via FastAPI backend.
 
+### Routes
+
+| Route | View | Description |
+|-------|------|-------------|
+| `/` | Dashboard | Project overview, active agents, recent activity |
+| `/interview` | Interview | Chat interface with Interviewer agent |
+| `/spec` | Game Spec | View/edit generated GDD |
+| `/features` | Feature Board | Kanban-style board of all features by status |
+| `/features/:id` | Feature Detail | Full spec, acceptance criteria, history, actions |
+| `/features/:id/review` | Human Review | Side-by-side diff, approve/reject/request changes |
+| `/agents` | Agent Monitor | Real-time status of all running agents |
+| `/logs` | Log Viewer | Filterable, searchable logs |
+| `/settings` | Settings | Project config, agent settings, MCP servers |
+
+### Component Hierarchy
+
+```mermaid
+flowchart TB
+    subgraph App
+        Header["Header\n(project name, nav, settings)"]
+
+        subgraph MainContent["Main Content Area"]
+            subgraph Interview["Interview View"]
+                ChatHistory["ChatHistory"]
+                ChatInput["ChatInput"]
+            end
+
+            subgraph Features["Features View"]
+                FeatureBoard["FeatureBoard (Kanban)"]
+                FeatureDetail["FeatureDetail"]
+                FeatureGraph["FeatureGraph (React Flow)"]
+            end
+
+            subgraph Review["Human Review View"]
+                DiffViewer["DiffViewer"]
+                AcceptanceCriteria["AcceptanceCriteria"]
+                ReviewActions["ReviewActions"]
+            end
+
+            subgraph Agents["Agents View"]
+                AgentList["AgentList"]
+                AgentDetail["AgentDetail"]
+                ActivityFeed["ActivityFeed"]
+            end
+        end
+
+        subgraph Sidebar["Sidebar (collapsible)"]
+            AgentStatus["AgentStatus (mini)"]
+            QuickActions["QuickActions"]
+        end
+
+        LogPanel["LogPanel (bottom drawer)"]
+        WebSocketProvider["WebSocketProvider"]
+    end
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Auto-Godot                                     Space Roguelike    ⚙️   │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌─ Interview ─┬─ Features ─┬─ Agents ─┬─ Logs ─┐                      │
-│  └─────────────┴────────────┴──────────┴────────┘                      │
-│                                                                         │
-│  ┌─ Feature Graph ──────────────────────┐  ┌─ Active Agents ─────────┐ │
-│  │                                      │  │                         │ │
-│  │  ✅ Core Player Controller           │  │  🤖 Coder #1            │ │
-│  │   ├── ✅ Player Movement             │  │     Working on: enemy-ai│ │
-│  │   ├── 🔄 Player Shooting             │  │     Progress: 65%       │ │
-│  │   └── ⏳ Player Health               │  │                         │ │
-│  │                                      │  │  🤖 Coder #2            │ │
-│  │  ✅ Enemy System                     │  │     Working on: inventory│ │
-│  │   ├── 🔄 Enemy AI                    │  │     Progress: 30%       │ │
-│  │   └── ⏳ Enemy Spawner               │  │                         │ │
-│  │                                      │  │  🧪 Tester              │ │
-│  │  ⏳ Inventory System                 │  │     Testing: shooting   │ │
-│  │   └── ⏳ Item Pickups                │  │                         │ │
-│  │                                      │  │  👁 Reviewer            │ │
-│  └──────────────────────────────────────┘  │     Status: idle        │ │
-│                                            └─────────────────────────┘ │
-│  ┌─ Logs ────────────────────────────────────────────────────────────┐ │
-│  │ 14:23:01 INFO  Coder #1 started implementing enemy-ai            │ │
-│  │ 14:23:15 INFO  Created EnemyAI.gd with patrol behavior           │ │
-│  │ 14:23:32 INFO  Tester running unit tests for player-shooting     │ │
-│  │ 14:23:45 WARN  Test failed: projectile not spawning              │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────┐ [Send]   │
-│  │ Add a new feature or ask a question...                   │          │
-│  └──────────────────────────────────────────────────────────┘          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
 
-### Key Features:
-- **Interview Panel**: Interactive chat-style interface for game design interviews
-- **Feature Graph**: Visual dependency graph with drag-to-rearrange, click for details
-- **Agent Monitor**: Real-time status of all agents with progress indicators
-- **Log Viewer**: Filterable, searchable logs with syntax highlighting
-- **Game Spec Viewer**: Rendered markdown view of the generated GDD
-- **WebSocket Updates**: Real-time updates without polling
+### Views
 
-### Tech Stack:
-- **Frontend**: React 18, TypeScript, Tailwind CSS, Vite
-- **State Management**: Zustand or React Query for server state
-- **Visualization**: React Flow for feature dependency graphs
-- **Backend**: FastAPI with WebSocket support
-- **API**: REST + WebSocket for real-time updates
+#### Dashboard (`/`)
+- **Project stats**: Features by status, completion percentage
+- **Active agents**: What each agent is currently doing
+- **Recent activity**: Last 10 events (commits, test results, reviews)
+- **Quick actions**: Start interview, view features, open logs
+
+#### Interview (`/interview`)
+- **Chat history**: Scrollable message history with Interviewer
+- **Message input**: Text area with send button
+- **Generated specs**: Collapsible panel showing specs as they're generated
+- **Actions**: "Generate Features", "Start Over"
+
+#### Feature Board (`/features`)
+- **Kanban columns**: DRAFT → PENDING → IN_PROGRESS → AGENT_REVIEW → HUMAN_REVIEW → COMPLETED
+- **Feature cards**: Name, priority badge, dependency count, assignee
+- **Filters**: By status, priority, search
+- **Bulk actions**: Approve all drafts, retry failed
+- **Graph toggle**: Switch between Kanban and dependency graph view
+
+#### Feature Detail (`/features/:id`)
+| Section | Content |
+|---------|---------|
+| Header | Name, status badge, priority, created/updated dates |
+| Description | Rendered markdown |
+| Acceptance Criteria | Checklist with test status indicators |
+| Dependencies | Links to blocking/blocked features |
+| History | Timeline of status changes, commits, test runs |
+| Actions | Approve (if DRAFT), Retry (if FAILED), View Diff (if in review) |
+
+#### Human Review (`/features/:id/review`)
+- **Diff viewer**: Side-by-side or unified diff of all changes
+- **File tree**: Navigate changed files
+- **Acceptance criteria**: Checklist to verify each criterion
+- **Test results**: Summary of passed/failed tests
+- **Actions**: Approve & Merge, Request Changes, Reject
+- **Comment input**: Feedback for requested changes
+
+#### Agent Monitor (`/agents`)
+- **Agent cards**: Type, status, current feature, last activity
+- **Activity timeline**: Real-time feed of tool calls (from hooks)
+- **Logs**: Filtered to selected agent
+- **Actions**: View worktree, stop agent
+
+### Tech Stack
+| Layer | Technology |
+|-------|------------|
+| Framework | React 18, TypeScript |
+| Styling | Tailwind CSS |
+| Build | Vite |
+| State | Zustand (client), React Query (server) |
+| Routing | React Router |
+| Graphs | React Flow |
+| Diff | react-diff-viewer |
+| Real-time | WebSocket via FastAPI |
+| Testing | Playwright (via MCP) |
 
 ### UI Testing: Playwright MCP
 
